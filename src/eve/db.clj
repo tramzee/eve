@@ -1,11 +1,14 @@
 (ns eve.db
   (:require [clojure.math.numeric-tower :as math]
+            [clojure.pprint :as pp :refer [pprint]]
+            [eve.market :as mkt]
             [korma.core :refer :all]
             [korma.db :refer [defdb sqlite3]]))
 
 (def sqll (sqlite3 {:db "/home/tramsey/proj/lein/eve/resources/db/eve.db"}))
 
 (def activityManufacturing 1)
+(def activityInvention 8)
 
 (defdb evedb sqll)
 
@@ -95,7 +98,7 @@
                                       (= :skillID 21791)
                                       (= :skillID 23087)
                                       (= :skillID 23121)))
-                           (where {:activityID 8
+                           (where {:activityID activityInvention
                                    :typeID bpid})
                            (fields :skillID)))))
 
@@ -106,27 +109,34 @@
     23121 730
     21790 731))
 
+(defn encrypt-group [bp]
+  (eskill-to-group (encrypt-skill bp)))
 
-(defn decryptor [item]
-  (let [attr-map {1112 :prob-mult
-                  1113 :me-mod
-                  1114 :te-mod
-                  1124 :run-mod}
-        attributes (select typeAttributes
-                           (where {:typeID (:id item)})
-                           (where (or (= :attributeID 1112)
-                                      (= :attributeID 1113)
-                                      (= :attributeID 1114)
-                                      (= :attributeID 1124))))
+(defn decryptor [id]
+  (case id
+    :none {:typeID id
+           :prob-mult 1
+           :me-mod 0
+           :te-mod 0
+           :run-mod 0}
+    (let [attr-map {1112 :prob-mult
+                    1113 :me-mod
+                    1114 :te-mod
+                    1124 :run-mod}
+          attributes (select typeAttributes
+                             (where {:typeID id})
+                             (where (or (= :attributeID 1112)
+                                        (= :attributeID 1113)
+                                        (= :attributeID 1114)
+                                        (= :attributeID 1124))))
 
-        afun (fn [i {:keys [attributeID valueFloat]}]
-               (let [k (attr-map attributeID)
-                     v (if (= k :prob-mult)
-                         valueFloat
-                         (int valueFloat))]
+          afun (fn [i {:keys [attributeID valueFloat]}]
+                 (let [k (attr-map attributeID)
+                       v (if (= k :prob-mult)
+                           valueFloat
+                           (int valueFloat))]
                    (assoc i k v)))]
-    (reduce afun item attributes))
-  )
+        (reduce afun {:typeID id} attributes))))
 
 ;; /*
 ;; 21790|Caldari Encryption Methods
@@ -190,23 +200,27 @@
 (defn activity [activityName]
   (:activityID (first (select activities (where {:activityName activityName})))))
 
-(defn invention-materials [id]
-  (select activityMaterials
-          (fields [:materialTypeID :typeID] :quantity)
-          (where {:typeID id
-                  :consume 1
-                  :activityID 8})))
+(defn item [id]
+  (first (select types (where {:typeID id}))))
+
 (defn name [id]
-  (:typeName (first (select types (where {:typeID id})))))
+  (:typeName (item id)))
 
 (defn search [typeName]
-  (map #(vector (:typeID %1) (:typeName %1))
-       (select types (where {:typeName [like (str "%" typeName "%")]}))))
+  (pprint (map #(vector (:typeID %1) (:typeName %1))
+               (select types (where {:typeName [like (str "%" typeName "%")]})))))
+
+(defn invention-components [bp]
+  (select activityMaterials
+          (fields [:materialTypeID :typeID] :quantity)
+          (where {:typeID bp
+                  :consume 1
+                  :activityID activityInvention})))
 
 (defn item-components [id]
   (select materials (fields :quantity [:materialTypeID :typeID]) (where {:typeID id})))
 
-(defn bp-components [bp]
+(defn manufacture-components [bp]
   (select activityMaterials
           (fields [:materialTypeID :typeID] :quantity)
           (where {:typeID bp
@@ -222,79 +236,79 @@
   ([item n]
      (assoc item :runs n)))
 
-(defn bp-me
-  ([item] (or (:me item) 0))
-  ([item me]
-     (assoc item :me me)))
-
-(defn bp-te
-  ([item] (or (:te item) 1))
-  ([item te]
-     (assoc item :te te)))
-
-(defn get-item [id]
-  {:id id
-   :name (name id)})
-
 (defn group-items [g]
-  (map (comp get-item :typeID) (select types (fields :typeID) (where {:groupID g}))))
+  (map :typeID (select types (fields :typeID) (where {:groupID g}))))
 
 (defn bp-decryptors [bp]
-  (let [decrypts (select types (where {:groupID (eskill-to-group (encrypt-skill bp))}))
-        decrypts (map (comp get-item :typeID) decrypts)]
-    (map decryptor decrypts)))
+  (conj (map decryptor (group-items (encrypt-group bp))) (decryptor :none)))
 
 (defn bp2-decryptors [bp2]
   (bp-decryptors (parent-bp bp2)))
 
-(defn item-decryptors [id]
-  (bp-decryptors (get-bp (parent-bp (:id (item-bp id))))))
-
 (defn bp-item [bp]
-  (get-item (:typeID (first (select activityProducts
-                                    (fields [:productTypeID :typeID])
-                                    (where {:typeID bp
-                                            :activityID activityManufacturing}))))))
-
-(defn get-bp
-  ([bp] (get-bp bp 0))
-  ([bp me]
-     (bp-me (merge (get-item bp) {:item (merge (bp-item bp)
-                                               {:components (bp-components bp)})})
-            (- 1 me))))
+  (:typeID (first (select activityProducts
+                          (fields [:productTypeID :typeID])
+                          (where {:typeID bp
+                                  :activityID activityManufacturing})))))
 
 (defn item-bp [id]
-  (get-bp (:typeID (first (select activityProducts
-                                  (fields :typeID)
-                                  (where {:activityID activityManufacturing
-                                          :productTypeID id}))))))
+  (:typeID (first (select activityProducts
+                          (fields :typeID)
+                          (where {:activityID activityManufacturing
+                                  :productTypeID id})))))
+(defn item-decryptors [id2]
+  (bp2-decryptors (item-bp id2)))
+
 (defn update-components [{id :id :as item}]
   (assoc item :components (item-components (:id id))))
 
-(defn invention-runs [bp]
+(defn invention-runs [bp2]
   (:quantity (first (select activityProducts
-                            (where {:activityID 8
-                                    :productTypeID bp})))))
+                            (where {:activityID activityInvention
+                                    :productTypeID bp2})))))
+(defn invention-prob [bp2]
+  (:probability (first (select activityProbabilities
+                               (fields :probability)
+                               (where {:productTypeID bp2
+                                       :activityID activityInvention})))))
 
-(defn invention-prob [id {:keys [prob-mult me-mod te-mod run-mod]
-                          did :id
-                          :or {prob-mult 1
-                               me-mod 0
-                               te-mod 0
-                               run-mod 0
-                               did :none}
-                          :as decrypt}]
-  (let [{prob :probability bp :typeID} (first (select activityProbabilities
-                                                      (fields :typeID, :probability)
-                                                      (where {:productTypeID id})))
-        runs (invention-runs id)
-        materials (invention-materials bp)]
+(defn invent [id2 {:keys [typeID prob-mult me-mod te-mod run-mod]}]
+  (let [bp2 (item-bp id2)
+        bp (parent-bp bp2)
+        runs (invention-runs bp2)
+        prob (invention-prob bp2)
+        me 2
+        te 4]
     {:prob (* prob 1.25 prob-mult)
      :runs (+ runs run-mod)
-     :materials (conj materials {:quantity 1 :typeID did})
-     :me (+ 0.02 (/ me-mod 100))
-     :pbp bp
-     :bp (get-bp id)}))
+     :me (+ me me-mod)
+     :te (+ te te-mod)
+     :invent-components (conj (invention-components bp) {:typeID typeID :quantity 1})
+     :manufacture-components (manufacture-components bp2)}))
+
+(defn invent* [id2]
+  (let [decryptors (item-decryptors id2)]
+    (map (partial invent id2) decryptors)))
+
+;; (defn invention-prob [id {:keys [prob-mult me-mod te-mod run-mod]
+;;                           did :id
+;;                           :or {prob-mult 1
+;;                                me-mod 0
+;;                                te-mod 0
+;;                                run-mod 0
+;;                                did :none}
+;;                           :as decrypt}]
+;;   (let [{prob :probability bp :typeID} (first (select activityProbabilities
+;;                                                       (fields :typeID, :probability)
+;;                                                       (where {:productTypeID id})))
+;;         runs (invention-runs id)
+;;         materials (invention-materials bp)]
+;;     {:prob (* prob 1.25 prob-mult)
+;;      :runs (+ runs run-mod)
+;;      :materials (conj materials {:quantity 1 :typeID did})
+;;      :me (+ 0.02 (/ me-mod 100))
+;;      :pbp bp
+;;      :bp (get-bp id)}))
 
 (defn show-invention [id]
   (let [pbp (parent-bp id)
@@ -329,14 +343,14 @@
 
 (def refine-fn (new-quant (* 0.5 1.1)))
 
-(defn item-refine [id]
-  (apply-saving* refine-fn (item-materials id)))
-
-(defn item-times* [c items]
-  (apply-saving* (repeat (new-quant c)) items))
-
 (defn apply-saving [sav-fn item]
   (update-in item [:quantity] sav-fn))
 
 (defn apply-saving* [sav-fn items]
   (map apply-saving (repeat sav-fn) items))
+
+(defn item-times* [c items]
+  (apply-saving* (repeat (new-quant c)) items))
+
+(defn item-refine [id]
+  (apply-saving* refine-fn (item-components id)))
