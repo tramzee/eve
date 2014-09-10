@@ -69,7 +69,7 @@
 (def TheForge 2)
 (def SinqLaison 32)
 
-(def default-region (atom TheForge))
+(def default-region (atom SinqLaison))
 
 (defn reset-cache []
   (reset! market-cache {}))
@@ -77,9 +77,12 @@
 (defn lookup-id
   ([id] (lookup-id id @default-region))
   ([id region]
-     (or (and (= id :none) {:sell {:median 0 :min 0 :max 0}
-                            :buy  {:median 0 :min 0 :max 0}
-                            :all  {:median 0 :min 0 :max 0}})
+     (or (and (or (= id :none)
+                  (= id 0))
+              {:all {:percentile 0,:median 0 :stddev 0 :min 0 :max 0 :avg 0 :volume 0}
+               :sell {:percentile 0,:median 0 :stddev 0 :min 0 :max 0 :avg 0 :volume 0}
+               :buy  {:percentile 0,:median 0 :stddev 0 :min 0 :max 0 :avg 0 :volume 0}})
+         (and (nil? id) (throw (Exception. "Attempt to lookup nil ID")))
          (get @market-cache id)
          (let [market-data (xml/parse (format market-uri-template id (+ region 10000000)))
                market-data (raw-process market-data)]
